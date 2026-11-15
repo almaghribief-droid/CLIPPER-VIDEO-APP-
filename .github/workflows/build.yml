@@ -1,4 +1,3 @@
-
 name: Build Clipper APK
 
 on:
@@ -22,7 +21,11 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - uses: android-actions/setup-android@v3
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
+          accept-android-sdk-licenses: true
 
       - name: Build APK
         run: gradle assembleDebug
@@ -31,4 +34,3 @@ jobs:
         with:
           name: CLIPPER-VIDEO-APK
           path: app/build/outputs/apk/debug/app-debug.apk
-
