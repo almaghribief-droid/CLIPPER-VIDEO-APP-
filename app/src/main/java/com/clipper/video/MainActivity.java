@@ -5,217 +5,268 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.provider.MediaStore;
 import android.view.Gravity;
+import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
-import android.widget.VideoView;
-import android.content.Intent;
 import android.widget.Toast;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.io.IOException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-
+import android.content.ContentResolver;
+import android.content.Intent;
+import android.database.Cursor;
+import android.provider.OpenableColumns;
 import androidx.activity.ComponentActivity;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
-import androidx.media3.common.MediaItem;
-import androidx.media3.transformer.Composition;
-import androidx.media3.transformer.EditedMediaItem;
-import androidx.media3.transformer.ExportException;
-import androidx.media3.transformer.ExportResult;
-import androidx.media3.transformer.Transformer;
+import org.json.JSONArray;
+import org.json.JSONObject;
+import java.io.*;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.net.URLEncoder;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class MainActivity extends ComponentActivity {
-    private VideoView videoView;
-    private EditText startTime, endTime;
-    private Button selectButton, exportButton;
-    private TextView status;
+    private EditText serverUrl;
+    private TextView selectedName, status;
+    private Button chooseButton, makeButton;
+    private LinearLayout results;
     private Uri videoUri;
-    private Transformer activeTransformer;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private ActivityResultLauncher<String> picker;
 
-    @Override
-    protected void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
-
-        LinearLayout layout = new LinearLayout(this);
-        layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setPadding(24, 24, 24, 24);
+    @Override protected void onCreate(Bundle state) {
+        super.onCreate(state);
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout page = new LinearLayout(this);
+        page.setOrientation(LinearLayout.VERTICAL);
+        page.setPadding(24, 28, 24, 28);
+        scroll.addView(page);
 
         TextView title = new TextView(this);
-        title.setText("CLIPPER VIDEO");
-        title.setTextSize(25);
+        title.setText("CLIPPER AI");
+        title.setTextSize(28);
         title.setGravity(Gravity.CENTER);
-        layout.addView(title);
+        title.setTypeface(null, 1);
+        page.addView(title);
 
         TextView subtitle = new TextView(this);
-        subtitle.setText("Potong video dengan mudah");
+        subtitle.setText("Ubah video panjang menjadi klip pendek otomatis");
         subtitle.setGravity(Gravity.CENTER);
-        layout.addView(subtitle);
+        subtitle.setPadding(0, 4, 0, 20);
+        page.addView(subtitle);
 
-        videoView = new VideoView(this);
-        layout.addView(videoView, new LinearLayout.LayoutParams(-1, 240));
+        TextView serverLabel = new TextView(this);
+        serverLabel.setText("Alamat server AI (HTTPS)");
+        page.addView(serverLabel);
+        serverUrl = new EditText(this);
+        serverUrl.setSingleLine(true);
+        serverUrl.setHint("https://alamat-server-anda");
+        serverUrl.setText(getPreferences(MODE_PRIVATE).getString("server_url", ""));
+        page.addView(serverUrl);
 
-        selectButton = new Button(this);
-        selectButton.setText("PILIH VIDEO");
-        layout.addView(selectButton);
+        TextView limit = new TextView(this);
+        limit.setText("Batas versi awal: video maksimal 10 menit. AI menganalisis ucapan, memilih hingga 5 bagian, lalu membuat klip vertikal 9:16 dan subtitle.");
+        limit.setPadding(0, 12, 0, 12);
+        page.addView(limit);
 
-        startTime = new EditText(this);
-        startTime.setHint("Waktu mulai (detik), contoh: 0");
-        startTime.setInputType(8194);
-        layout.addView(startTime);
+        chooseButton = new Button(this);
+        chooseButton.setText("PILIH VIDEO");
+        page.addView(chooseButton);
+        selectedName = new TextView(this);
+        selectedName.setText("Belum ada video dipilih.");
+        selectedName.setPadding(0, 8, 0, 8);
+        page.addView(selectedName);
 
-        endTime = new EditText(this);
-        endTime.setHint("Waktu selesai (detik), contoh: 15");
-        endTime.setInputType(8194);
-        layout.addView(endTime);
-
-        exportButton = new Button(this);
-        exportButton.setText("POTONG & SIMPAN MP4");
-        layout.addView(exportButton);
+        makeButton = new Button(this);
+        makeButton.setText("BUAT KLIP OTOMATIS DENGAN AI");
+        page.addView(makeButton);
 
         status = new TextView(this);
-        status.setText("Pilih video untuk mulai.");
-        status.setPadding(0, 16, 0, 0);
-        layout.addView(status);
-        setContentView(layout);
+        status.setText("Masukkan alamat server AI setelah server dipasang.");
+        status.setPadding(0, 16, 0, 16);
+        page.addView(status);
 
+        TextView resultTitle = new TextView(this);
+        resultTitle.setText("HASIL KLIP");
+        resultTitle.setTextSize(18);
+        resultTitle.setTypeface(null, 1);
+        page.addView(resultTitle);
+        results = new LinearLayout(this);
+        results.setOrientation(LinearLayout.VERTICAL);
+        page.addView(results);
+
+        setContentView(scroll);
         picker = registerForActivityResult(new ActivityResultContracts.GetContent(), uri -> {
             if (uri != null) {
                 videoUri = uri;
-                videoView.setVideoURI(uri);
-                videoView.setOnPreparedListener(mp -> {
-                    mp.setOnVideoSizeChangedListener((player, width, height) -> {});
-                    videoView.start();
-                });
-                status.setText("Video siap dipotong.");
+                selectedName.setText(getDisplayName(uri));
+                status.setText("Video dipilih. Tekan tombol untuk mulai.");
             }
         });
-
-        selectButton.setOnClickListener(v -> picker.launch("video/*"));
-        exportButton.setOnClickListener(v -> exportVideo());
+        chooseButton.setOnClickListener(v -> picker.launch("video/*"));
+        makeButton.setOnClickListener(v -> startJob());
     }
 
-    private void exportVideo() {
-        if (videoUri == null) {
-            status.setText("Pilih video terlebih dahulu.");
-            return;
-        }
-
-        final long startMs;
-        final long endMs;
-        try {
-            String startText = startTime.getText().toString().trim();
-            String endText = endTime.getText().toString().trim();
-            if (startText.isEmpty() || endText.isEmpty()) {
-                throw new NumberFormatException();
+    private String getDisplayName(Uri uri) {
+        try (Cursor c = getContentResolver().query(uri, null, null, null, null)) {
+            if (c != null && c.moveToFirst()) {
+                int i = c.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                if (i >= 0) return c.getString(i);
             }
-            startMs = Long.parseLong(startText) * 1000L;
-            endMs = Long.parseLong(endText) * 1000L;
-        } catch (NumberFormatException e) {
-            status.setText("Isi waktu mulai dan selesai dengan angka detik.");
-            return;
-        }
+        } catch (Exception ignored) {}
+        return "Video dipilih";
+    }
 
-        if (startMs < 0 || endMs <= startMs) {
-            status.setText("Waktu tidak valid. Waktu selesai harus lebih besar.");
-            return;
-        }
-
-        exportButton.setEnabled(false);
-        selectButton.setEnabled(false);
-        status.setText("Sedang memotong video...");
-
+    private void startJob() {
+        if (videoUri == null) { status.setText("Pilih video terlebih dahulu."); return; }
+        String base = serverUrl.getText().toString().trim().replaceAll("/+$", "");
+        if (!base.startsWith("https://")) { status.setText("Alamat server harus diawali https://"); return; }
+        getPreferences(MODE_PRIVATE).edit().putString("server_url", base).apply();
+        chooseButton.setEnabled(false); makeButton.setEnabled(false);
+        results.removeAllViews();
+        status.setText("Mengunggah video ke server AI...");
         executor.execute(() -> {
-            File output = new File(getCacheDir(), "clipper_output.mp4");
-            if (output.exists()) output.delete();
-
-            MediaItem item = new MediaItem.Builder()
-                    .setUri(videoUri)
-                    .setClippingConfiguration(
-                            new MediaItem.ClippingConfiguration.Builder()
-                                    .setStartPositionMs(startMs)
-                                    .setEndPositionMs(endMs)
-                                    .build())
-                    .build();
-
-            EditedMediaItem edited = new EditedMediaItem.Builder(item).build();
-
-            runOnUiThread(() -> {
-                activeTransformer = new Transformer.Builder(this)
-                        .addListener(new Transformer.Listener() {
-                            @Override
-                            public void onCompleted(Composition composition, ExportResult result) {
-                                saveVideo(output);
-                            }
-
-                            @Override
-                            public void onError(Composition composition, ExportResult result,
-                                                ExportException exception) {
-                                runOnUiThread(() -> {
-                                    status.setText("Gagal memproses: " + exception.getMessage());
-                                    setButtonsEnabled(true);
-                                });
-                            }
-                        })
-                        .build();
-                try {
-                    activeTransformer.start(edited, output.getAbsolutePath());
-                } catch (Exception e) {
-                    status.setText("Gagal memulai: " + e.getMessage());
-                    setButtonsEnabled(true);
+            try {
+                String jobId = uploadVideo(base);
+                updateStatus("Video diterima. AI sedang menganalisis ucapan dan memilih momen terbaik...");
+                JSONObject job = null;
+                for (int i = 0; i < 360; i++) {
+                    Thread.sleep(5000);
+                    job = getJson(base + "/api/jobs/" + jobId);
+                    String state = job.optString("status");
+                    if ("completed".equals(state)) break;
+                    if ("failed".equals(state)) throw new IOException(job.optString("message", "Analisis gagal."));
+                    updateStatus("AI sedang bekerja... Status: " + state);
                 }
-            });
+                if (job == null || !"completed".equals(job.optString("status")))
+                    throw new IOException("Proses terlalu lama. Coba cek server atau ulangi nanti.");
+                JSONArray clips = job.optJSONArray("clips");
+                if (clips == null || clips.length() == 0) throw new IOException("AI belum menghasilkan klip.");
+                for (int i = 0; i < clips.length(); i++) {
+                    JSONObject clip = clips.getJSONObject(i);
+                    String video = clip.optString("video_url");
+                    String subtitle = clip.optString("subtitle_url");
+                    String label = clip.optString("title", "Klip " + (i+1));
+                    addClip(label, clip.optString("transcript"), video, subtitle);
+                }
+                updateStatus(job.optString("message", "Selesai!"));
+            } catch (Exception e) {
+                updateStatus("Gagal: " + e.getMessage());
+            } finally {
+                runOnUiThread(() -> { chooseButton.setEnabled(true); makeButton.setEnabled(true); });
+            }
         });
     }
 
-    private void saveVideo(File file) {
-        try {
-            ContentValues values = new ContentValues();
-            values.put(MediaStore.Video.Media.DISPLAY_NAME,
-                    "Clipper_" + System.currentTimeMillis() + ".mp4");
-            values.put(MediaStore.Video.Media.MIME_TYPE, "video/mp4");
-            values.put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/Clipper");
+    private String uploadVideo(String base) throws Exception {
+        String boundary = "----ClipperBoundary" + System.currentTimeMillis();
+        URL url = new URL(base + "/api/clip?base_url=" + URLEncoder.encode(base, "UTF-8"));
+        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        conn.setRequestMethod("POST");
+        conn.setDoOutput(true);
+        conn.setConnectTimeout(30000);
+        conn.setReadTimeout(120000);
+        conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
+        try (OutputStream out = new BufferedOutputStream(conn.getOutputStream());
+             InputStream in = getContentResolver().openInputStream(videoUri)) {
+            if (in == null) throw new IOException("Tidak bisa membaca video.");
+            String filename = getDisplayName(videoUri).replace("\"", "_");
+            write(out, "--" + boundary + "\r\nContent-Disposition: form-data; name=\"video\"; filename=\"" + filename + "\"\r\nContent-Type: video/mp4\r\n\r\n");
+            byte[] buffer = new byte[64 * 1024]; int n;
+            while ((n = in.read(buffer)) != -1) out.write(buffer, 0, n);
+            write(out, "\r\n--" + boundary + "--\r\n");
+            out.flush();
+        }
+        int code = conn.getResponseCode();
+        InputStream response = code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream();
+        String body = readAll(response);
+        conn.disconnect();
+        if (code < 200 || code >= 300) throw new IOException("Server menolak video: " + body);
+        return new JSONObject(body).getString("job_id");
+    }
 
-            Uri savedUri = getContentResolver().insert(
-                    MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values);
-            if (savedUri == null) throw new IOException("Tidak bisa membuat file tujuan.");
+    private JSONObject getJson(String address) throws Exception {
+        HttpURLConnection c = (HttpURLConnection) new URL(address).openConnection();
+        c.setConnectTimeout(20000); c.setReadTimeout(30000);
+        int code = c.getResponseCode();
+        String body = readAll(code >= 200 && code < 300 ? c.getInputStream() : c.getErrorStream());
+        c.disconnect();
+        if (code < 200 || code >= 300) throw new IOException(body);
+        return new JSONObject(body);
+    }
 
-            try (InputStream in = new FileInputStream(file);
-                 OutputStream out = getContentResolver().openOutputStream(savedUri)) {
-                if (out == null) throw new IOException("Tidak bisa membuka file tujuan.");
-                byte[] buffer = new byte[8192];
-                int count;
-                while ((count = in.read(buffer)) != -1) out.write(buffer, 0, count);
-            }
-
-            runOnUiThread(() -> {
-                status.setText("BERHASIL! Video tersimpan di Movies/Clipper.");
-                setButtonsEnabled(true);
-                Toast.makeText(this, "Video berhasil disimpan", Toast.LENGTH_LONG).show();
+    private void addClip(String title, String transcript, String videoUrl, String subtitleUrl) {
+        runOnUiThread(() -> {
+            TextView t = new TextView(this);
+            t.setText(title + "\n" + transcript);
+            t.setPadding(0, 12, 0, 6);
+            results.addView(t);
+            Button download = new Button(this);
+            download.setText("UNDUH " + title.toUpperCase());
+            results.addView(download);
+            download.setOnClickListener(v -> {
+                download.setEnabled(false);
+                executor.execute(() -> {
+                    try {
+                        saveRemoteVideo(videoUrl);
+                        runOnUiThread(() -> Toast.makeText(this, title + " tersimpan di Movies/Clipper", Toast.LENGTH_LONG).show());
+                    } catch (Exception e) { updateStatus("Gagal mengunduh: " + e.getMessage()); }
+                    finally { runOnUiThread(() -> download.setEnabled(true)); }
+                });
             });
-        } catch (Exception e) {
-            runOnUiThread(() -> {
-                status.setText("Gagal menyimpan: " + e.getMessage());
-                setButtonsEnabled(true);
-            });
+            Button subtitleButton = new Button(this);
+            subtitleButton.setText("UNDUH SUBTITLE (.SRT)");
+            results.addView(subtitleButton);
+            subtitleButton.setOnClickListener(v -> executor.execute(() -> {
+                try { saveSubtitle(subtitleUrl, title.replace(" ", "_") + ".srt"); }
+                catch (Exception e) { updateStatus("Gagal mengunduh subtitle: " + e.getMessage()); }
+            }));
+        });
+    }
+
+    private void saveRemoteVideo(String address) throws Exception {
+        HttpURLConnection c = (HttpURLConnection) new URL(address).openConnection();
+        c.setConnectTimeout(30000); c.setReadTimeout(120000);
+        if (c.getResponseCode() != 200) throw new IOException("Tidak bisa mengunduh klip.");
+        ContentValues values = new ContentValues();
+        values.put(MediaStore.Video.Media.DISPLAY_NAME, "Clipper_AI_" + System.currentTimeMillis() + ".mp4");
+        values.put(MediaStore.Video.Media.MIME_TYPE, "video/mp4");
+        values.put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/Clipper");
+        Uri dest = getContentResolver().insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values);
+        if (dest == null) throw new IOException("Tidak bisa membuat file tujuan.");
+        try (InputStream in = c.getInputStream(); OutputStream out = getContentResolver().openOutputStream(dest)) {
+            byte[] b = new byte[64*1024]; int n; while ((n=in.read(b))!=-1) out.write(b,0,n);
+        }
+        c.disconnect();
+    }
+
+    private void saveSubtitle(String address, String filename) throws Exception {
+        HttpURLConnection c = (HttpURLConnection) new URL(address).openConnection();
+        if (c.getResponseCode() != 200) throw new IOException("Subtitle tidak tersedia.");
+        ContentValues values = new ContentValues();
+        values.put(MediaStore.Downloads.DISPLAY_NAME, filename);
+        values.put(MediaStore.Downloads.MIME_TYPE, "application/x-subrip");
+        values.put(MediaStore.Downloads.RELATIVE_PATH, "Download/Clipper");
+        Uri dest = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+        if (dest == null) throw new IOException("Tidak bisa menyimpan subtitle.");
+        try (InputStream in = c.getInputStream(); OutputStream out = getContentResolver().openOutputStream(dest)) {
+            byte[] b = new byte[8192]; int n; while ((n=in.read(b))!=-1) out.write(b,0,n);
+        }
+        c.disconnect();
+        runOnUiThread(() -> Toast.makeText(this, "Subtitle tersimpan di Download/Clipper", Toast.LENGTH_LONG).show());
+    }
+
+    private void updateStatus(String value) { runOnUiThread(() -> status.setText(value)); }
+    private static void write(OutputStream out, String s) throws IOException { out.write(s.getBytes("UTF-8")); }
+    private static String readAll(InputStream in) throws IOException {
+        if (in == null) return "";
+        try (ByteArrayOutputStream b = new ByteArrayOutputStream()) {
+            byte[] data = new byte[8192]; int n; while ((n=in.read(data))!=-1) b.write(data,0,n);
+            return b.toString("UTF-8");
         }
     }
-
-    private void setButtonsEnabled(boolean enabled) {
-        exportButton.setEnabled(enabled);
-        selectButton.setEnabled(enabled);
-    }
-
-    @Override
-    protected void onDestroy() {
-        executor.shutdown();
-        super.onDestroy();
-    }
+    @Override protected void onDestroy() { executor.shutdown(); super.onDestroy(); }
 }
